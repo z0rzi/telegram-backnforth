@@ -1,0 +1,30 @@
+{
+  "name": "telegram-backnforth",
+  "version": "1.0.0",
+  "description": "A simple set of helpers to build interactive Telegram bots with Telegraf",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "telegraf",
+    "interactive"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "telegraf": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "telegraf": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}
