@@ -10,7 +10,7 @@ function normalize(text: string) {
     .toLowerCase();
 }
 
-class Chat {
+export class Chat {
   constructor(public ctx: Context<Update>) {}
 
   messageResolve = null as null | ((message: string) => void);
