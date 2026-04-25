@@ -1,7 +1,7 @@
 import { Context, Markup, NarrowedContext, Telegraf } from "telegraf";
 import { Message, Update } from "telegraf/types";
 
-type FnCallback = (chat: Chat, params: any) => Promise<unknown> | unknown;
+type FnCallback = (chat: Chat) => Promise<unknown>;
 
 function normalize(text: string) {
   return text
@@ -22,13 +22,13 @@ class Chat {
 
   private ensureNotWaiting() {
     if (this.messageReject) {
-      this.messageReject("OVERWRITTEN");
+      this.messageReject("INTERRUPTED");
       this.messageReject = null;
       this.messageResolve = null;
     }
 
     if (this.actionReject) {
-      this.actionReject("OVERWRITTEN");
+      this.actionReject("INTERRUPTED");
       this.actionReject = null;
       this.actionResolve = null;
 
@@ -42,6 +42,16 @@ class Chat {
     }
   }
 
+  waitFor = {
+    choice: this.waitForChoice.bind(this) as typeof this.waitForChoice,
+    inlineChoice: this.waitForInlineChoice.bind(
+      this,
+    ) as typeof this.waitForInlineChoice,
+    confirm: this.waitForConfirm.bind(this) as typeof this.waitForConfirm,
+    text: this.waitForText.bind(this) as typeof this.waitForText,
+    number: this.waitForNumber.bind(this) as typeof this.waitForNumber,
+  };
+
   /**
    * Asks the user to choose between multiple options.
    *
@@ -51,7 +61,7 @@ class Chat {
    *
    * @returns The payload of the chosen option.
    */
-  async waitForChoice<T>(
+  private async waitForChoice<T>(
     text: string,
     choices: { label: string; payload: T }[],
     columns = 2,
@@ -74,7 +84,7 @@ class Chat {
     return option.payload;
   }
 
-  async waitForInlineChoice<T>(
+  private async waitForInlineChoice<T>(
     prompt: string,
     choices: { label: string; payload: T }[],
   ): Promise<T> {
@@ -109,7 +119,7 @@ class Chat {
    *
    * @returns true if the user confirmed, false otherwise.
    */
-  async waitForConfirm(text: string): Promise<boolean> {
+  private async waitForConfirm(text: string): Promise<boolean> {
     this.ensureNotWaiting();
 
     await this.ctx.reply(
@@ -134,7 +144,7 @@ class Chat {
     return reply;
   }
 
-  async waitForNumber(
+  private async waitForNumber(
     prompt: string,
     opts?: {
       min?: number;
@@ -181,7 +191,7 @@ class Chat {
   /**
    * Sends a message to the chat
    */
-  async sendMessage(text: string) {
+  async send(text: string) {
     return this.ctx.reply(text);
   }
 
@@ -251,8 +261,7 @@ export default class Bot {
   bot: Telegraf;
   chats = new Map<number, Chat>();
 
-  private allFns = new Map<string, FnCallback>();
-  private allCommands = new Map<string, [string, any]>();
+  private allCommands = new Map<string, FnCallback>();
 
   constructor(readonly token: string) {
     this.bot = new Telegraf(token);
@@ -310,33 +319,18 @@ export default class Bot {
     if (messageText.startsWith("/")) {
       // It's a command!
       const command = messageText.split(" ")[0];
-      const fnInfos = this.allCommands.get(command);
-      if (!fnInfos) {
-        ctx.reply(`Command ${command} not found.`);
+      const callback = this.allCommands.get(command);
+      if (!callback) {
+        ctx.reply(
+          `Command ${command} not found...\n\nHere are the commands you can use:`,
+          this.getCommandsKeyboard(),
+        );
         return;
       }
-      this.call(chat, fnInfos[0], fnInfos[1])
-        .then(() => {
-          // All done. Reset the keyboard.
-          ctx.reply("All done.", this.getCommandsKeyboard());
-        })
-        .catch((e) => {
-          if (e === "OVERWRITTEN") {
-            // We were waiting for a message or action from the user, but they
-            // sent another command.
-            // This is fine, we just stop this thread.
-            console.warn(
-              "Conversation thread was interrupted by another command.",
-            );
-            return;
-          }
-          // Something went wrong. Reset the keyboard.
-          ctx.reply(
-            "An error occured:\n" + e.message + "\n\nAborting.",
-            this.getCommandsKeyboard(),
-          );
-          ctx.reply(e.stack);
-        });
+      callback(chat).then(() => {
+        ctx.reply("All done.", this.getCommandsKeyboard());
+      });
+
       return;
     }
 
@@ -360,24 +354,12 @@ export default class Bot {
     return Markup.keyboard(keyboard, { columns: 2 }).resize();
   }
 
-  onCommand(text: string, fnName: string, fnParams: any = {}) {
+  onCommand(text: string, callback: FnCallback) {
     if (!text.startsWith("/")) {
       text = "/" + text;
     }
 
-    this.allCommands.set(text, [fnName, fnParams]);
-  }
-
-  async call(chat: Chat, fnName: string, params: any = {}) {
-    if (!this.allFns.has(fnName)) {
-      throw new Error(`Function ${fnName} not found.`);
-    }
-    const fn = this.allFns.get(fnName)!;
-    return fn(chat, params);
-  }
-
-  fn(name: string, fn: (conv: Chat) => Promise<unknown>) {
-    this.allFns.set(name, fn);
+    this.allCommands.set(text, callback);
   }
 
   /**

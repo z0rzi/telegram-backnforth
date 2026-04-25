@@ -2,7 +2,7 @@
 
 A lightweight, conversation-first wrapper around [Telegraf](https://github.com/telegraf/telegraf) that makes building interactive Telegram bots feel like writing a simple CLI dialog.
 
-Instead of juggling middleware and state machines, you register **functions** and **commands**, then use intuitive `waitFor*` helpers to pause execution until the user replies.
+Instead of juggling middleware and state machines, you register **commands with inline callbacks** and use intuitive `chat.waitFor.*` helpers to pause execution until the user replies.
 
 ---
 
@@ -23,20 +23,18 @@ import Bot from "telegram-backnforth";
 
 const bot = new Bot("YOUR_BOT_TOKEN");
 
-bot.onCommand("start", "start");
+bot.onCommand("start", async (chat) => {
+  await chat.send("Welcome! 👋");
 
-bot.fn("start", async (chat) => {
-  await chat.sendMessage("Welcome! 👋");
-
-  const choice = await chat.waitForInlineChoice("What do you want to do?", [
+  const choice = await chat.waitFor.inlineChoice("What do you want to do?", [
     { label: "Do something", payload: "something" },
     { label: "Do nothing", payload: "nothing" },
   ]);
 
   if (choice === "something") {
-    await chat.sendMessage("You chose to do something!");
+    await chat.send("You chose to do something!");
   } else {
-    await chat.sendMessage("You chose to do nothing. Fair enough.");
+    await chat.send("You chose to do nothing. Fair enough.");
   }
 });
 ```
@@ -47,28 +45,22 @@ Run your script, open Telegram, and send `/start` to your bot. The bot will wait
 
 ## Core Concepts
 
-### 1. Register a function with `bot.fn()`
+### 1. Register a command with `bot.onCommand()`
 
-A **function** is an async handler that receives a `Chat` instance. You can call any of the `waitFor*` methods inside it — execution will pause until the user responds.
+Commands are registered by passing a callback directly. The callback receives a `Chat` instance where you can call any of the `waitFor.*` methods — execution will pause until the user responds.
 
 ```ts
-bot.fn("askName", async (chat) => {
-  const name = await chat.waitForText("What's your name?");
-  await chat.sendMessage(`Nice to meet you, ${name}!`);
+bot.onCommand("ask", async (chat) => {
+  const name = await chat.waitFor.text("What's your name?");
+  await chat.send(`Nice to meet you, ${name}!`);
 });
 ```
 
-### 2. Bind it to a command with `bot.onCommand()`
-
-```ts
-bot.onCommand("ask", "askName");
-```
-
-Now sending `/ask` in Telegram will trigger the `askName` function.
+Now sending `/ask` in Telegram will trigger the callback.
 
 > The leading `/` is optional in `onCommand` — `"ask"` and `"/ask"` are equivalent.
 
-### 3. Conversation state is per-chat
+### 2. Conversation state is per-chat
 
 Each user gets their own `Chat` instance. Multiple users can talk to the bot simultaneously without interfering with each other.
 
@@ -93,31 +85,17 @@ The constructor automatically:
 const bot = new Bot("123456:ABC-DEF...");
 ```
 
-### `bot.onCommand(text: string, fnName: string, fnParams?: any)`
+### `bot.onCommand(text: string, callback: (chat: Chat) => Promise<unknown>)`
 
-Binds a slash command to a registered function.
-
-```ts
-bot.onCommand("start", "startFn");
-bot.onCommand("/help", "helpFn", { showTips: true });
-```
-
-When a user sends `/start`, the bot looks up the function named `startFn` and calls it with the optional params.
-
-### `bot.fn(name: string, fn: (chat: Chat) => Promise<unknown>)`
-
-Registers a named function that can be invoked by commands or by `bot.call()`.
+Binds a slash command directly to a callback.
 
 ```ts
-bot.fn("orderPizza", async (chat) => {
-  const size = await chat.waitForChoice("Pick a size:", [
-    { label: "Small", payload: "S" },
-    { label: "Medium", payload: "M" },
-    { label: "Large", payload: "L" },
-  ]);
-  // ...continues after user replies
+bot.onCommand("start", async (chat) => {
+  await chat.send("Hello!");
 });
 ```
+
+When a user sends `/start`, the bot runs the provided callback with the chat instance.
 
 ### `bot.stop()`
 
@@ -131,39 +109,43 @@ await bot.stop();
 
 ## `Chat` API
 
-Inside every function you receive a `Chat` object representing the current conversation.
+Inside every command callback you receive a `Chat` object representing the current conversation.
 
-### `chat.sendMessage(text: string): Promise<Message>`
+### `chat.send(text: string): Promise<Message>`
 
 Sends a plain text message to the user.
 
 ```ts
-await chat.sendMessage("Hello!");
+await chat.send("Hello!");
 ```
 
-### `chat.waitForText(prompt: string): Promise<string>`
+### `chat.waitFor`
+
+An object exposing all the wait helpers. Each one pauses execution until the user responds.
+
+#### `chat.waitFor.text(prompt: string): Promise<string>`
 
 Displays a prompt, removes the keyboard, and waits for the user to send a text message.
 
 ```ts
-const name = await chat.waitForText("What's your name?");
+const name = await chat.waitFor.text("What's your name?");
 ```
 
-### `chat.waitForConfirm(text: string): Promise<boolean>`
+#### `chat.waitFor.confirm(text: string): Promise<boolean>`
 
 Displays a Yes/No keyboard and returns `true` if the user clicks "Yes".
 
 ```ts
-const confirmed = await chat.waitForConfirm("Delete this file?");
+const confirmed = await chat.waitFor.confirm("Delete this file?");
 if (confirmed) { /* ... */ }
 ```
 
-### `chat.waitForChoice<T>(text: string, choices: { label: string; payload: T }[], columns = 2): Promise<T>`
+#### `chat.waitFor.choice<T>(text: string, choices: { label: string; payload: T }[], columns = 2): Promise<T>`
 
 Displays a custom reply keyboard with the given choices. Returns the **payload** of the selected option.
 
 ```ts
-const color = await chat.waitForChoice("Pick a color:", [
+const color = await chat.waitFor.choice("Pick a color:", [
   { label: "🔴 Red", payload: "#ff0000" },
   { label: "🟢 Green", payload: "#00ff00" },
   { label: "🔵 Blue", payload: "#0000ff" },
@@ -173,23 +155,23 @@ const color = await chat.waitForChoice("Pick a color:", [
 
 The keyboard is one-time and automatically resized.
 
-### `chat.waitForInlineChoice<T>(prompt: string, choices: { label: string; payload: T }[]): Promise<T>`
+#### `chat.waitFor.inlineChoice<T>(prompt: string, choices: { label: string; payload: T }[]): Promise<T>`
 
 Displays an **inline keyboard** (buttons attached to the message) instead of a reply keyboard. Better for single-click interactions.
 
 ```ts
-const action = await chat.waitForInlineChoice("What next?", [
+const action = await chat.waitFor.inlineChoice("What next?", [
   { label: "Edit", payload: "edit" },
   { label: "Delete", payload: "delete" },
 ]);
 ```
 
-### `chat.waitForNumber(prompt: string, opts?): Promise<number>`
+#### `chat.waitFor.number(prompt: string, opts?): Promise<number>`
 
 Waits for the user to send a valid number. Validates input and re-prompts automatically if invalid.
 
 ```ts
-const age = await chat.waitForNumber("How old are you?", {
+const age = await chat.waitFor.number("How old are you?", {
   min: 0,
   max: 120,
   allowNegative: false,
@@ -213,30 +195,28 @@ import Bot from "telegram-backnforth";
 
 const bot = new Bot(process.env.BOT_TOKEN!);
 
-bot.fn("order", async (chat) => {
-  const item = await chat.waitForChoice("What would you like?", [
+bot.onCommand("order", async (chat) => {
+  const item = await chat.waitFor.choice("What would you like?", [
     { label: "🍕 Pizza", payload: "pizza" },
     { label: "🍔 Burger", payload: "burger" },
   ]);
 
-  const qty = await chat.waitForNumber(`How many ${item}s?`, {
+  const qty = await chat.waitFor.number(`How many ${item}s?`, {
     min: 1,
     max: 10,
     allowDecimal: false,
   });
 
-  const confirmed = await chat.waitForConfirm(
+  const confirmed = await chat.waitFor.confirm(
     `Order ${qty}x ${item}?`
   );
 
   if (confirmed) {
-    await chat.sendMessage("Order placed! 🎉");
+    await chat.send("Order placed! 🎉");
   } else {
-    await chat.sendMessage("Order cancelled.");
+    await chat.send("Order cancelled.");
   }
 });
-
-bot.onCommand("order", "order");
 ```
 
 ---
@@ -244,11 +224,15 @@ bot.onCommand("order", "order");
 ## Behavior Notes
 
 ### Command interruption
-If a user is in the middle of a conversation (e.g., waiting for `waitForText`) and sends a new slash command, the current conversation is **silently aborted** and the new command starts. No error is thrown to the user — the old promise simply resolves with `'OVERWRITTEN'` internally.
+If a user is in the middle of a conversation (e.g., waiting for `waitFor.text`) and sends a new slash command, the current conversation is **silently aborted** and the new command starts. No error is thrown to the user — the old promise is interrupted internally.
 
 ### Unknown commands
 If a user sends a command that hasn't been registered with `onCommand`, the bot replies with:
-> `Command /xyz not found.`
+> `Command /xyz not found...`
+>
+> `Here are the commands you can use:`
+>
+> _(plus a keyboard with all registered commands)_
 
 ### Unknown text
 If a user sends plain text and no conversation is waiting for it, the bot replies with:
