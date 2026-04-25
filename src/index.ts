@@ -43,150 +43,162 @@ export class Chat {
   }
 
   waitFor = {
-    choice: this.waitForChoice.bind(this) as typeof this.waitForChoice,
-    inlineChoice: this.waitForInlineChoice.bind(
-      this,
-    ) as typeof this.waitForInlineChoice,
-    confirm: this.waitForConfirm.bind(this) as typeof this.waitForConfirm,
-    text: this.waitForText.bind(this) as typeof this.waitForText,
-    number: this.waitForNumber.bind(this) as typeof this.waitForNumber,
-  };
+    /**
+     * Asks the user to choose between multiple options.
+     *
+     * @param prompt The text to display to the user.
+     * @param choices The choices to display to the user.
+     * @param columns The number of columns to display the choices in.
+     *
+     * @returns The payload of the chosen option.
+     */
+    choice: async <T>(
+      text: string,
+      choices: { label: string; payload: T }[],
+      columns = 2,
+    ): Promise<T> => {
+      this.ensureNotWaiting();
 
-  /**
-   * Asks the user to choose between multiple options.
-   *
-   * @param prompt The text to display to the user.
-   * @param choices The choices to display to the user.
-   * @param columns The number of columns to display the choices in.
-   *
-   * @returns The payload of the chosen option.
-   */
-  private async waitForChoice<T>(
-    text: string,
-    choices: { label: string; payload: T }[],
-    columns = 2,
-  ): Promise<T> {
-    this.ensureNotWaiting();
+      const labels = choices.map((c) => c.label);
 
-    const labels = choices.map((c) => c.label);
+      await this.ctx.reply(
+        text,
+        Markup.keyboard(labels, { columns }).oneTime().resize(),
+      );
+      const reply = await this.waitForMessage();
 
-    await this.ctx.reply(
-      text,
-      Markup.keyboard(labels, { columns }).oneTime().resize(),
-    );
-    const reply = await this.waitForMessage();
-
-    const option = choices.find((c) => normalize(c.label) === normalize(reply));
-    if (!option) {
-      throw new Error(`Invalid choice: ${reply}`);
-    }
-
-    return option.payload;
-  }
-
-  private async waitForInlineChoice<T>(
-    prompt: string,
-    choices: { label: string; payload: T }[],
-  ): Promise<T> {
-    this.ensureNotWaiting();
-
-    const kb = Markup.inlineKeyboard(
-      choices.map((c, idx) => [
-        Markup.button.callback(c.label, idx.toString()),
-      ]),
-    );
-    this.actionMessage = await this.ctx.reply(prompt, kb);
-    const reply = await this.waitForAction();
-
-    const selectedChoice = choices[+reply];
-
-    // Removing the keyboard
-    await this.ctx.telegram.editMessageText(
-      this.ctx.chat!.id,
-      this.actionMessage!.message_id,
-      undefined,
-      prompt + "\n\n" + selectedChoice.label,
-    );
-    this.actionMessage = null;
-
-    return selectedChoice.payload;
-  }
-
-  /**
-   * Asks the user to confirm (yes/no) something.
-   *
-   * @param prompt The text to display to the user.
-   *
-   * @returns true if the user confirmed, false otherwise.
-   */
-  private async waitForConfirm(text: string): Promise<boolean> {
-    this.ensureNotWaiting();
-
-    await this.ctx.reply(
-      text,
-      Markup.keyboard(["No", "Yes"], { columns: 2 }).oneTime().resize(),
-    );
-    const reply = await this.waitForMessage();
-
-    return reply === "Yes";
-  }
-
-  /**
-   * Waits for a message from the user and returns it.
-   *
-   * @param prompt The text to display to the user.
-   */
-  async waitForText(prompt: string): Promise<string> {
-    this.ensureNotWaiting();
-
-    this.ctx.reply(prompt, Markup.removeKeyboard());
-    const reply = await this.waitForMessage();
-    return reply;
-  }
-
-  private async waitForNumber(
-    prompt: string,
-    opts?: {
-      min?: number;
-      max?: number;
-      allowNegative?: boolean;
-      allowDecimal?: boolean;
-    },
-  ): Promise<number> {
-    this.ensureNotWaiting();
-
-    this.ctx.reply(prompt, Markup.removeKeyboard());
-    let strRx = "\\d+";
-    if (opts?.allowNegative !== false) {
-      strRx = "-?" + strRx;
-    }
-    if (opts?.allowDecimal !== false) {
-      strRx += "(\\.\\d+)?";
-    }
-
-    const rx = new RegExp(strRx);
-
-    let min = opts?.min ?? -Infinity;
-    let max = opts?.max ?? Infinity;
-
-    let reply = "";
-    while (!rx.test(reply) || +reply < min || +reply > max) {
-      if (reply) {
-        let msg = "Please enter a number";
-        if (isFinite(min) && isFinite(max)) {
-          msg += ` between ${min} and ${max}`;
-        } else if (isFinite(min)) {
-          msg += ` greater than ${min}`;
-        } else if (isFinite(max)) {
-          msg += ` lower than ${max}`;
-        }
-        this.ctx.reply(msg);
+      const option = choices.find(
+        (c) => normalize(c.label) === normalize(reply),
+      );
+      if (!option) {
+        throw new Error(`Invalid choice: ${reply}`);
       }
-      reply = await this.waitForMessage();
-    }
 
-    return +reply;
-  }
+      return option.payload;
+    },
+
+    /**
+     * Asks the user to choose between multiple options.
+     * Same as `choice`, but displays the options inline right after the prompt
+     *
+     * @param prompt The text to display to the user.
+     * @param choices The choices to display to the user.
+     * @param columns The number of columns to display the choices in.
+     *
+     * @returns The payload of the chosen option.
+     */
+    inlineChoice: async <T>(
+      prompt: string,
+      choices: { label: string; payload: T }[],
+    ): Promise<T> => {
+      this.ensureNotWaiting();
+
+      const kb = Markup.inlineKeyboard(
+        choices.map((c, idx) => [
+          Markup.button.callback(c.label, idx.toString()),
+        ]),
+      );
+      this.actionMessage = await this.ctx.reply(prompt, kb);
+      const reply = await this.waitForAction();
+
+      const selectedChoice = choices[+reply];
+
+      // Removing the keyboard
+      await this.ctx.telegram.editMessageText(
+        this.ctx.chat!.id,
+        this.actionMessage!.message_id,
+        undefined,
+        prompt + "\n\n" + selectedChoice.label,
+      );
+      this.actionMessage = null;
+
+      return selectedChoice.payload;
+    },
+
+    /**
+     * Asks the user to confirm (yes/no) something.
+     *
+     * @param prompt The text to display to the user.
+     *
+     * @returns true if the user confirmed, false otherwise.
+     */
+    confirm: async (text: string): Promise<boolean> => {
+      this.ensureNotWaiting();
+
+      await this.ctx.reply(
+        text,
+        Markup.keyboard(["No", "Yes"], { columns: 2 }).oneTime().resize(),
+      );
+      const reply = await this.waitForMessage();
+
+      return reply === "Yes";
+    },
+
+    /**
+     * Waits for a message from the user and returns it.
+     *
+     * @param prompt The text to display to the user.
+     */
+    text: async (prompt: string): Promise<string> => {
+      this.ensureNotWaiting();
+
+      this.ctx.reply(prompt, Markup.removeKeyboard());
+      const reply = await this.waitForMessage();
+      return reply;
+    },
+
+    /**
+     * Waits for a number from the user.
+     *
+     * @param prompt The text to display to the user.
+     * @param opts Options to configure the number.
+     *
+     * @returns The number entered by the user.
+     */
+    number: async (
+      prompt: string,
+      opts?: {
+        min?: number;
+        max?: number;
+        allowNegative?: boolean;
+        allowDecimal?: boolean;
+      },
+    ): Promise<number> => {
+      this.ensureNotWaiting();
+
+      this.ctx.reply(prompt, Markup.removeKeyboard());
+      let strRx = "\\d+";
+      if (opts?.allowNegative !== false) {
+        strRx = "-?" + strRx;
+      }
+      if (opts?.allowDecimal !== false) {
+        strRx += "(\\.\\d+)?";
+      }
+
+      const rx = new RegExp(strRx);
+
+      let min = opts?.min ?? -Infinity;
+      let max = opts?.max ?? Infinity;
+
+      let reply = "";
+      while (!rx.test(reply) || +reply < min || +reply > max) {
+        if (reply) {
+          let msg = "Please enter a number";
+          if (isFinite(min) && isFinite(max)) {
+            msg += ` between ${min} and ${max}`;
+          } else if (isFinite(min)) {
+            msg += ` greater than ${min}`;
+          } else if (isFinite(max)) {
+            msg += ` lower than ${max}`;
+          }
+          this.ctx.reply(msg);
+        }
+        reply = await this.waitForMessage();
+      }
+
+      return +reply;
+    },
+  };
 
   /**
    * Sends a message to the chat
