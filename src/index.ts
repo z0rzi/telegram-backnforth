@@ -49,16 +49,21 @@ export class Chat {
      * @param prompt The text to display to the user.
      * @param choices The choices to display to the user.
      * @param columns The number of columns to display the choices in.
+     * @param allowCustom Whether to allow the user to type their own text rather than choosing from the choices.
      *
      * @returns The payload of the chosen option.
      */
-    choice: async <T>(
+    choice: async <T, C extends boolean = false>(
       text: string,
       choices: { label: string; payload: T }[],
-      columns = 2,
-    ): Promise<T> => {
+      opts?: {
+        columns?: number;
+        allowCustom?: C;
+      },
+    ): Promise<C extends true ? string | T : T> => {
       this.ensureNotWaiting();
 
+      const columns = opts?.columns ?? 2;
       const labels = choices.map((c) => c.label);
 
       await this.ctx.reply(
@@ -71,6 +76,9 @@ export class Chat {
         (c) => normalize(c.label) === normalize(reply),
       );
       if (!option) {
+        if (opts?.allowCustom) {
+          return reply as C extends true ? string | T : T;
+        }
         throw new Error(`Invalid choice: ${reply}`);
       }
 
