@@ -1,5 +1,5 @@
 import { Context, Markup, NarrowedContext, Telegraf } from "telegraf";
-import { Message, Update } from "telegraf/types";
+import { Document, Message, PhotoSize, Update } from "telegraf/types";
 
 type FnCallback = (chat: Chat) => Promise<unknown>;
 
@@ -13,32 +13,32 @@ function normalize(text: string) {
 export class Chat {
   constructor(public ctx: Context<Update>) {}
 
-  messageResolve = null as null | ((message: string) => void);
-  actionResolve = null as null | ((action: string) => void);
-  actionMessage = null as null | Message.TextMessage;
+  waitingFor = "none" as "document" | "photo" | "text" | "action" | "none";
 
-  actionReject = null as null | ((err: string) => void);
-  messageReject = null as null | ((err: string) => void);
+  private resolve = null as null | ((res: unknown) => void);
+  private reject = null as null | ((err: unknown) => void);
+
+  /**
+   * The message that contains the action buttons.
+   * Only used when `this.waitingFor === "action"`
+   */
+  private actionMessage = null as null | Message.TextMessage;
 
   private ensureNotWaiting() {
-    if (this.messageReject) {
-      this.messageReject("INTERRUPTED");
-      this.messageReject = null;
-      this.messageResolve = null;
-    }
-
-    if (this.actionReject) {
-      this.actionReject("INTERRUPTED");
-      this.actionReject = null;
-      this.actionResolve = null;
-
-      this.ctx.telegram.editMessageText(
-        this.ctx.chat!.id,
-        this.actionMessage!.message_id,
-        undefined,
-        this.actionMessage!.text + "\n\nIgnored...",
-      );
-      this.actionMessage = null;
+    if (this.reject) {
+      if (this.actionMessage) {
+        this.ctx.telegram.editMessageText(
+          this.ctx.chat!.id,
+          this.actionMessage!.message_id,
+          undefined,
+          this.actionMessage!.text + "\n\nIgnored...",
+        );
+        this.actionMessage = null;
+      }
+      this.reject("INTERRUPTED");
+      this.reject = null;
+      this.resolve = null;
+      this.waitingFor = "none";
     }
   }
 
@@ -206,6 +206,62 @@ export class Chat {
 
       return +reply;
     },
+
+    /**
+     * Waits for the user to send a file
+     *
+     * @param prompt The text to display to the user.
+     * @param type How do you want the file to be returned?
+     * @param extension The extension of the file to expect.
+     *
+     * @returns The file as a string or an ArrayBuffer, depending on the `type` parameter.
+     */
+    document: async <T extends "text" | "buffer" = "text">(
+      prompt: string,
+      type: T = "text" as T,
+      extension?: string,
+    ): Promise<T extends "text" ? string : ArrayBuffer> => {
+      this.ensureNotWaiting();
+
+      let fileName = undefined as string | undefined;
+      await this.ctx.reply(prompt, Markup.removeKeyboard());
+      let doc = await this.waitForDocument();
+      fileName = doc.file_name;
+
+      while (extension && fileName && !fileName.endsWith(extension)) {
+        await this.ctx.reply(`Please send me a ${extension} file`);
+        doc = await this.waitForDocument();
+        fileName = doc.file_name;
+      }
+
+      // Downloading the file
+      const fileId = doc.file_id;
+      const url = await this.ctx.telegram.getFileLink(fileId);
+
+      return (
+        type === "buffer"
+          ? fetch(url.href).then((res) => res.arrayBuffer())
+          : fetch(url.href).then((res) => res.text())
+      ) as Promise<T extends "text" ? string : ArrayBuffer>;
+    },
+
+    /**
+     * Waits for the user to send a photo
+     *
+     * @param prompt The text to display to the user.
+     *
+     * @returns The photo as an ArrayBuffer.
+     */
+    photo: async (prompt: string): Promise<ArrayBuffer> => {
+      this.ensureNotWaiting();
+
+      await this.ctx.reply(prompt, Markup.removeKeyboard());
+      const photos = await this.waitForPhoto();
+
+      // We only keep the first photo
+      const url = await this.ctx.telegram.getFileLink(photos[0].file_id);
+      return fetch(url.href).then((res) => res.arrayBuffer());
+    },
   };
 
   /**
@@ -220,8 +276,28 @@ export class Chat {
    */
   private waitForAction(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      this.actionResolve = resolve;
-      this.actionReject = reject;
+      this.resolve = resolve as typeof this.resolve;
+      this.reject = reject;
+      this.waitingFor = "action";
+    });
+  }
+
+  /**
+   * Internal method, waits for the user to send a file.
+   */
+  private waitForDocument(): Promise<Document> {
+    return new Promise<Document>((resolve, reject) => {
+      this.waitingFor = "document";
+      this.resolve = resolve as typeof this.resolve;
+      this.reject = reject;
+    });
+  }
+
+  private waitForPhoto(): Promise<PhotoSize[]> {
+    return new Promise<PhotoSize[]>((resolve, reject) => {
+      this.waitingFor = "photo";
+      this.resolve = resolve as typeof this.resolve;
+      this.reject = reject;
     });
   }
 
@@ -230,49 +306,35 @@ export class Chat {
    * Also gets triggered when the user clicks on a button.
    */
   private waitForMessage(): Promise<string> {
-    if (this.messageResolve) {
-      throw new Error("There is already someone waiting for a message...");
-    }
-
     const p = new Promise<string>((resolve, reject) => {
-      this.messageResolve = resolve;
-      this.messageReject = reject;
+      this.resolve = resolve as typeof this.resolve;
+      this.reject = reject;
+      this.waitingFor = "text";
     });
 
     return p;
   }
 
-  async onAction(action: string) {
-    if (this.actionResolve) {
-      this.actionResolve(action);
-      this.actionResolve = null;
-      this.actionReject = null;
-      return true;
-    }
-    return false;
-  }
-
   /**
-   * Called when a user sends a message to the bot.
-   * Do not used unless you want to simulate a user sending a message.
+   * Called when a user sends something to the bot.
+   *
+   * @param type The type of the message (photo, document, text, action)
+   * @param content The content of the message
+   *
+   * @returns true if the message was handled, false otherwise
    */
-  async onMessage(content: string) {
-    if (this.messageResolve) {
-      this.messageResolve(content);
-      this.messageResolve = null;
-      this.messageReject = null;
-      return true;
+  onUserSent<T>(type: typeof this.waitingFor, content: T) {
+    if (this.waitingFor !== type) {
+      return false;
     }
-    if (this.actionResolve) {
-      // We were waiting for an action, but we got a message...
-      // We stop the action thread.
-      this.ensureNotWaiting();
-    }
-    return false;
+
+    this.resolve!(content);
+    this.resolve = null;
+    this.reject = null;
+    this.waitingFor = "none";
+    return true;
   }
 }
-
-type Ctx = NarrowedContext<Context<Update>, Update.MessageUpdate<Message>>;
 
 /**
  * Main class to program the interactions
@@ -285,7 +347,6 @@ export default class Bot {
 
   constructor(readonly token: string) {
     this.bot = new Telegraf(token);
-    this.bot.on("message", this.onMessage.bind(this));
     this.bot.action(/^\d+$/, (ctx) => {
       const chatId = ctx.chat!.id;
 
@@ -296,72 +357,99 @@ export default class Bot {
       }
 
       const action = ctx.match[0];
-      chat.onAction(action);
+      const handled = chat.onUserSent("action", action);
+      if (!handled) {
+        console.warn("Unhandled action...");
+      }
+    });
+    this.bot.on("message", async (ctx) => {
+      const message = ctx?.message;
+      if (!message) return;
+
+      const chatId = ctx.chat.id;
+      let chat = this.chats.get(chatId);
+
+      if ("photo" in message) {
+        const photo = message["photo"];
+        const handled = chat?.onUserSent("photo", photo);
+
+        if (!handled) {
+          await this.unexpectedInputError(ctx, "photo", chat?.waitingFor);
+        }
+        return;
+      }
+
+      if ("document" in ctx.message) {
+        const doc = ctx.message["document"];
+        const handled = chat?.onUserSent("document", doc);
+
+        if (!handled) {
+          await this.unexpectedInputError(ctx, "document", chat?.waitingFor);
+        }
+        return;
+      }
+
+      let messageText = "";
+
+      if ("text" in message) {
+        messageText = message.text;
+      }
+
+      if (!messageText) return;
+
+      if (!chat) {
+        chat = new Chat(ctx);
+        this.chats.set(chatId, chat);
+      }
+
+      if (messageText.startsWith("/")) {
+        // It's a command!
+        const command = messageText.split(" ")[0];
+        const callback = this.allCommands.get(command);
+        if (!callback) {
+          this.showCommands(
+            ctx,
+            `Command ${command} not found...\n\nHere are the commands you can use:`,
+          );
+          return;
+        }
+        callback(chat).then(() => {
+          ctx.reply("All done.", this.getCommandsKeyboard());
+        });
+
+        return;
+      }
+
+      const handled = chat.onUserSent("text", messageText);
+      if (!handled) {
+        this.unexpectedInputError(ctx, "text", chat?.waitingFor);
+      }
     });
     this.bot.launch();
     console.log("Bot started, you can now start chatting with it!");
   }
 
-  private async onMessage(ctx: Ctx) {
-    const message = ctx?.message;
-
-    if (!message) return;
-
-    if ("photo" in message) {
-      ctx.reply(
-        "I see you sent me an image... I'm just going to ignore it, I'm not equipped to handle that yet.",
-      );
-      return;
-    }
-
-    if ("document" in ctx.message) {
-      ctx.reply(
-        "I see you sent me a document... I'm just going to ignore it, I'm not equipped to handle that yet.",
-      );
-      return;
-    }
-
-    let messageText = "";
-
-    if ("text" in message) {
-      messageText = message.text;
-    }
-
-    if (!messageText) return;
-
-    const chatId = ctx.chat.id;
-    let chat = this.chats.get(chatId);
-    if (!chat) {
-      chat = new Chat(ctx);
-      this.chats.set(chatId, chat);
-    }
-
-    if (messageText.startsWith("/")) {
-      // It's a command!
-      const command = messageText.split(" ")[0];
-      const callback = this.allCommands.get(command);
-      if (!callback) {
-        ctx.reply(
-          `Command ${command} not found...\n\nHere are the commands you can use:`,
-          this.getCommandsKeyboard(),
-        );
-        return;
-      }
-      callback(chat).then(() => {
-        ctx.reply("All done.", this.getCommandsKeyboard());
-      });
-
-      return;
-    }
-
-    const handled = await chat.onMessage(messageText);
-    if (!handled) {
-      // No one was listening...
-      ctx.reply(
-        "Here are the commands you can use",
+  private unexpectedInputError(
+    ctx: NarrowedContext<Context<Update>, Update.MessageUpdate<Message>>,
+    providedType: string,
+    expectedType?: Chat["waitingFor"],
+  ) {
+    if (expectedType === "none" || !expectedType) {
+      return ctx.reply(
+        `You sent me something, but we weren't in a conversation... Here are the commands you can use:`,
         this.getCommandsKeyboard(),
       );
     }
+    return ctx.reply(
+      `You sent me a ${providedType}, but I was waiting for a ${expectedType}... I'm just going to ignore it. :)`,
+    );
+  }
+
+  private showCommands(
+    ctx: NarrowedContext<Context<Update>, Update.MessageUpdate<Message>>,
+    prompt = "Here are the commands you can use",
+  ) {
+    return ctx.reply(prompt, this.getCommandsKeyboard());
   }
 
   private getCommandsKeyboard() {
