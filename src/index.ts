@@ -91,7 +91,6 @@ export class Chat {
      *
      * @param prompt The text to display to the user.
      * @param choices The choices to display to the user.
-     * @param columns The number of columns to display the choices in.
      *
      * @returns The payload of the chosen option.
      */
@@ -413,9 +412,14 @@ export default class Bot {
           );
           return;
         }
-        callback(chat).then(() => {
-          ctx.reply("All done.", this.getCommandsKeyboard());
-        });
+        callback(chat)
+          .then(() => {
+            ctx.reply("All done.", this.getCommandsKeyboard());
+          })
+          .catch((err) => {
+            console.error(err);
+            ctx.reply(`An error happened...\n\n${err.message}`, this.getCommandsKeyboard());
+          });
 
         return;
       }
